@@ -1,0 +1,34 @@
+const https = require('https');
+const fs = require('fs');
+const express = require("express");
+const fileUpload = require("express-fileupload"); 
+const pdfParse = require("pdf-parse");
+const cors = require("cors");
+
+const app = express();
+
+app.use("/", express.static("public")); 
+app.use(fileUpload());
+app.use(cors());
+
+app.post("/extract-text", (req, res) => {
+    console.log("Inside index.js extract-text");
+    if (!req.files && !req.files.pdfFile) {
+        console.log("File is not present in the request");
+        res.status(400);
+        res.end();
+    }
+
+    pdfParse(req.files.pdfFile).then(result => {              
+        res.send(result.text);
+    });
+});    
+
+const options = {
+    key: fs.readFileSync('key.pem'),
+    cert: fs.readFileSync('cert.pem'),
+};
+
+https.createServer(options, app).listen(3001, '0.0.0.0', () => {
+    
+});

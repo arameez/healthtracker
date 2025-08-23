@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template to create an EC2 instance and set up a Django application.
+
+Resources:
+
+  # IAM Role and Instance Profile
+  SQLiteS3AccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::health-trkr-app"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "arn:aws:s3:::health-trkr-app/*"
+
+  SQLiteInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SQLiteS3AccessRole
+
+  # EBS Volume
+  SQLiteEBSVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      Size: 10  # Size in GB
+      AvailabilityZone: ap-south-1a
+
+  SQLiteDjangoEC2Instance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      InstanceType: "t2.micro" # Choose the instance type
+      KeyName: "healthapp-key" # Replace with your key pair name
+      AvailabilityZone: ap-south-1a      
+      SubnetId: !ImportValue Django-SQLite-VPC-PublicSubnetId
+      ImageId: "ami-0b7207e48d1b6c06f" # Amazon Linux 2023 AMI (Replace if needed)
+      IamInstanceProfile: !Ref SQLiteInstanceProfile
+      SecurityGroupIds:
+        - !ImportValue Django-SQLite-VPC-PublicSecurityGroupId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Update packages and install prerequisites
+
+          sudo yum update -y
+          sudo yum install -y sqlite python3.11 aws-cli
+          
+          # Mount EBS volume
+          mkfs.ext4 /dev/xvdf
+          mkdir /mnt/sqlite-data
+          mkdir /tmp/sql-scripts
+          mount /dev/xvdf /mnt/sqlite-data
+          chmod -R 777 /mnt/sqlite-data
+          chmod -R 777 /tmp/sql-scripts
+          echo "/dev/xvdf /mnt/sqlite-data ext4 defaults,nofail 0 2" >> /etc/fstab
+          
+          # Create the SQLite3 database
+          sqlite3 /mnt/sqlite-data/healthapp.db "VACUUM;"
+          chmod 666 /mnt/sqlite-data/healthapp.db
+
+          # Download .sql files from S3 and execute them
+          aws s3 cp s3://health-trkr-app/sql-scripts/ /tmp/sql-scripts --recursive          
+          chmod 555 /tmp/sql-scripts/*.sql
+          sqlite3 /mnt/sqlite-data/healthapp.db < /tmp/sql-scripts/create-db-tables.sql
+          sqlite3 /mnt/sqlite-data/healthapp.db < /tmp/sql-scripts/test.sql          
+          sqlite3 /mnt/sqlite-data/healthapp.db < /tmp/sql-scripts/test-range.sql
+          sqlite3 /mnt/sqlite-data/healthapp.db < /tmp/sql-scripts/test-synonym.sql          
+          
+          # Setup S3 backup script
+          echo '#!/bin/bash' > /mnt/sqlite-data/backup-script.sh
+          echo 'TIMESTAMP=$(date +%F_%T)' >> /mnt/sqlite-data/backup-script.sh
+          echo 'aws s3 cp /mnt/sqlite-data/healthapp.db s3://health-trkr-app/db-backup/healthapp_$TIMESTAMP.db' >> /mnt/sqlite-data/backup-script.sh
+          chmod 755 /mnt/sqlite-data/backup-script.sh
+          
+          # Add to cron
+          (crontab -l 2>/dev/null; echo "0 * * * * /mnt/sqlite-data/backup-script.sh") | crontab -          
+          
+          # Steps for Django installation
+          python3.11 -m ensurepip
+          python3.11 -m pip install --upgrade pip
+          
+          pip3 install virtualenv
+
+          # Create a virtual environment and activate it
+          cd /home/ec2-user
+          virtualenv django_env
+          source django_env/bin/activate
+
+          # Install Django 4.2.4 and related packages
+          pip3 install django djangorestframework django-cors-headers django-sslserver spacy bcrypt
+          python3.11 -m spacy download en_core_web_sm
+
+          # Inform the user
+          echo "Environment setup complete. You can copy your Django project to /home/ec2-user and run it."
+
+          # Set permissions for the ec2-user
+          chown -R ec2-user:ec2-user /home/ec2-user              
+
+      Tags:
+        - Key: Name
+          Value: DjangoAppServer          
+          
+  # Attach EBS Volume to EC2 Instance
+  EC2VolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      VolumeId: !Ref SQLiteEBSVolume
+      InstanceId: !Ref SQLiteDjangoEC2Instance
+      Device: /dev/xvdf          
+
+Outputs:
+  InstancePublicIP:
+    Description: "Public IP address of the EC2 instance"
+    Value: !GetAtt SQLiteDjangoEC2Instance.PublicIp
+  SetupInstructions:
+    Description: "Instructions to deploy your Django project"
+    Value: !Sub |
+      1. SSH into the EC2 instance: ssh -i your-key.pem ec2-user@${SQLiteDjangoEC2Instance.PublicIp}
+      2. Copy your Django project files to /home/ec2-user.
+      3. Activate the virtual environment: source /home/ec2-user/django_env/bin/activate
+      4. Navigate to your Django project folder and run: python manage.py runserver 0.0.0.0:8000

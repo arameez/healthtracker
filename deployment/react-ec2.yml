@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+
+  # IAM Role and Instance Profile
+  ReactS3AccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !Sub "arn:aws:s3:::health-trkr-app"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "arn:aws:s3:::health-trkr-app/*"
+
+  ReactInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ReactS3AccessRole
+
+  ReactEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: "ami-0b7207e48d1b6c06f"  # Update with the latest Amazon Linux 2 AMI
+      SubnetId: !ImportValue Django-SQLite-VPC-PublicSubnetId
+      KeyName: "healthapp-key"  # Replace with your key pair name
+      IamInstanceProfile: !Ref ReactInstanceProfile
+      SecurityGroupIds:
+        - !ImportValue Django-SQLite-VPC-PublicSecurityGroupId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y gcc-c++ make
+          curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+          yum install -y nodejs nginx
+          systemctl start nginx
+          systemctl enable nginx
+          
+          # Download React app from S3
+          aws s3 cp s3://health-trkr-app/code/my-health-app.zip /home/ec2-user/
+          aws s3 cp s3://health-trkr-app/code/extract-pdf.zip /home/ec2-user/
+          cd /home/ec2-user/
+          unzip my-health-app.zip
+          unzip extract-pdf.zip
+          cd my-health-app
+          sudo npm install
+          cd ../extract-pdf
+          sudo npm install
+          cd ../
+          sudo npm install -g pm2
+          
+      Tags:
+        - Key: Name
+          Value: ReactAppServer
+
+  ReactEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP and SSH access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0

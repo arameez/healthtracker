@@ -1,0 +1,25 @@
+/* styles.css */
+
+header {
+    display: flex;
+    background-color: #333;
+    color: #fff;
+    padding: 10px 0;   
+    align-content: first baseline; 
+  }
+ 
+  
+  .button {
+    padding: 10px 20px; /* Adjust as needed */
+    background-color: #007bff; /* Change to your desired color */
+    color: #fff; /* Text color */
+    border: none;
+    border-radius: 20px; /* Controls the curve of the right corner */
+    cursor: pointer;
+    float: right;
+  }
+  
+  /* Hover effect to make the button slightly darker on hover */
+  .button:hover {
+    background-color: #0056b3; /* Change to a darker shade or a different color */
+  }
